@@ -1,0 +1,18 @@
+# version: "3.9"
+
+services:
+  
+  abctechnologies:
+    image: abctechnologies:latest
+    container_name: 'abctechnologies'
+    build:
+      context: . 
+    ports:
+      - 8080:8080
+    networks:
+        - backend
+
+networks:
+  backend:
+    driver: bridge
+  
