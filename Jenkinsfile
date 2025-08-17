@@ -1,53 +1,50 @@
 pipeline {
     agent any
-
     environment {
-        AWS_REGION = 'us-east-1'
-        ECR_REPO = 'your-ecr-repo-name'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
-        IMAGE_NAME = "${ECR_REPO}:${IMAGE_TAG}"
-        AWS_ACCOUNT_ID = '123456789012'
-        ECR_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+        DOCKERHUB_REPO = 'cnleng/abctechnologies-war-app'
+        IMAGE_NAME = "${DOCKERHUB_REPO}:${IMAGE_TAG}"
+    }
+    tools {
+        // Install the Maven version configured as "M3" and add it to the path.
+        maven "maven3"
     }
 
     stages {
-        stage('Checkout') {
+        stage('Checkout (Git)') {
             steps {
+                // Get some code from a GitHub repository
                 git branch: 'main', url: 'https://github.com/cnleng/ABCTechnologies.git'
             }
         }
 
-        stage('Compile') {
+        stage('Compile (Maven)') {
+            agent { label 'worker1' } 
             steps {
-                sh './mvnw clean compile' // Or './gradlew build' if using Gradle
+                // Run Maven on a Unix agent.
+                git branch: 'main', url: 'https://github.com/cnleng/ABCTechnologies.git'
+                sh "mvn -DskipTests clean compile"
             }
         }
-
+        
         stage('Tests') {
-            parallel {
-                stage('Unit Tests') {
-                    steps {
-                        sh './mvnw test' // Or './gradlew test'
-                    }
-                }
-                stage('Integration Tests') {
-                    steps {
-                        sh './mvnw verify -Pintegration-test' // Adjust as needed
-                    }
-                }
-            }
-        }
-
-        stage('Build') {
             steps {
-                sh './mvnw package -DskipTests' // Or './gradlew build -x test'
+                // Run Maven on a Unix agent.
+                sh "mvn test"
             }
         }
-
-        stage('Build Docker Image') {
+        
+        stage('Package (Maven)') {
+            steps {
+                // Run Maven on a Unix agent.
+                sh "mvn clean package -DskipTests"
+            }
+        }
+        
+       stage('Build Docker Image') {
             steps {
                 script {
-                    sh "docker build -t ${IMAGE_NAME} ."
+                    sh "docker build -t ${DOCKERHUB_REPO}:${IMAGE_TAG} ."
                 }
             }
         }
@@ -55,27 +52,38 @@ pipeline {
         stage('Push Docker Image') {
             steps {
                 script {
-                    sh """
-                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_URI}
-                        docker tag ${IMAGE_NAME} ${ECR_URI}:${IMAGE_TAG}
-                        docker push ${ECR_URI}:${IMAGE_TAG}
-                    """
+                    withCredentials([usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKERHUB_USER',
+                        passwordVariable: 'DOCKERHUB_PASS'
+                    )]) {
+                        sh """
+                            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USER" --password-stdin
+                            docker push ${DOCKERHUB_REPO}:${IMAGE_TAG}
+                            docker tag ${DOCKERHUB_REPO}:${IMAGE_TAG} ${DOCKERHUB_REPO}:latest
+                            docker push ${DOCKERHUB_REPO}:latest
+                        """
+                    }
                 }
             }
         }
-
-        stage('Deploy to AWS Kubernetes') {
+        
+       stage('Deploy to Kubernetes Deployment') {
             steps {
                 script {
-                    sh """
-                        kubectl set image deployment/your-deployment-name your-container-name=${ECR_URI}:${IMAGE_TAG} --namespace your-namespace
-                    """
+                    withCredentials([file(credentialsId: 'k3s-kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+                        withEnv(["KUBECONFIG=$KUBECONFIG_FILE"]) {
+                            sh """
+                                kubectl apply -f k8s/deployment.yaml
+                            """
+                        }
+                    }
                 }
             }
         }
     }
-
-    post {
+    
+   post {
         success {
             echo '✅ Deployment successful!'
         }
@@ -84,3 +92,4 @@ pipeline {
         }
     }
 }
+
